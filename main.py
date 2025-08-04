@@ -327,39 +327,86 @@ async def handle_moderator_message(update: Update, context: ContextTypes.DEFAULT
     context.bot_data[PENDING_REASON_KEY].pop(moderator_id, None)
 
 
-def main() -> None:
-    """Starts the bot using polling."""
-    token = os.getenv("BOT_TOKEN")
-    if not token:
-        raise RuntimeError("BOT_TOKEN environment variable must be set.")
+def _create_application(token: str) -> Application:
+    """
+    Helper to build and configure the Application instance with all handlers attached.
 
+    This function isolates the setup of the Telegram bot so it can be run in a
+    separate thread alongside a simple HTTP server. Passing in the token avoids
+    capturing environment variables inside thread entry points.
+    """
     application = Application.builder().token(token).build()
 
-    # Handlers for the user questionnaire.
+    # Attach command handlers and message handlers for the questionnaire.
     application.add_handler(CommandHandler("start", start))
-    # Text messages from normal chats go to handle_message.
-    # Handle text messages from users (not commands). Callback queries are handled separately by
-    # CallbackQueryHandler; they do not trigger message handlers in python‑telegram‑bot 22.x, so
-    # there is no need to explicitly filter them out. Using only TEXT and ~COMMAND filters
-    # prevents commands like /start from being treated as regular text.
     application.add_handler(
         MessageHandler(
             filters.TEXT & (~filters.COMMAND),
             handle_message,
         )
     )
-
-    # Callback queries from moderator chat.
+    # Handle callback queries from the moderator inline buttons.
     application.add_handler(CallbackQueryHandler(handle_moderator_callback))
-    # Moderator messages (rejection reasons).
-    application.add_handler(
-        MessageHandler(filters.ALL & filters.Chat(int(os.getenv("MOD_CHAT_ID", "0"))), handle_moderator_message),
-    )
+    # Handle moderator replies containing rejection reasons. Scope the handler to the
+    # moderator chat by ID. Note: using `filters.Chat` with int(...) ensures the
+    # handler triggers only in the specified chat.
+    mod_chat_id = int(os.getenv("MOD_CHAT_ID", "0"))
+    if mod_chat_id != 0:
+        application.add_handler(
+            MessageHandler(filters.ALL & filters.Chat(mod_chat_id), handle_moderator_message),
+        )
+    return application
 
-    # Start the bot.
-    logger.info("Bot starting...")
-    # run_polling is a blocking call that internally runs the event loop and handles graceful shutdown.
-    application.run_polling()
+
+def _run_bot(token: str) -> None:
+    """
+    Entry point to run the Telegram bot. This function is designed to be executed
+    in its own thread so that the main thread can run a simple web server for
+    Render's port binding requirements. It builds the application and starts
+    polling. Any uncaught exceptions will be logged.
+    """
+    try:
+        application = _create_application(token)
+        logger.info("Bot starting...")
+        # run_polling() is blocking; it starts the event loop internally and
+        # handles graceful shutdown signals.
+        application.run_polling()
+    except Exception:
+        logger.exception("Unexpected error in bot thread")
+
+
+def main() -> None:
+    """Starts the Telegram bot and a simple health‑check web server on Render."""
+    token = os.getenv("BOT_TOKEN")
+    if not token:
+        raise RuntimeError("BOT_TOKEN environment variable must be set.")
+
+    # Start the bot in a separate daemon thread. Running the bot in another thread
+    # allows the main thread to host a tiny HTTP server to satisfy Render's port
+    # scanning requirements. Without an open port, Render will terminate the
+    # service on free plans. See: https://render.com/docs/web-services#port-binding
+    import threading
+
+    bot_thread = threading.Thread(target=_run_bot, args=(token,), daemon=True)
+    bot_thread.start()
+
+    # Set up a minimal Flask app to keep the service's port open. The application
+    # exposes a single route '/' that returns a simple message. This endpoint can
+    # be pinged (e.g. by an uptime service) to keep the instance awake.
+    from flask import Flask
+
+    http_app = Flask(__name__)
+
+    @http_app.route("/")
+    def index() -> str:
+        return "OK"
+
+    # Determine the port Render expects us to listen on. When running locally,
+    # default to port 10000. On Render, the PORT environment variable is set
+    # automatically. See: https://render.com/docs/web-services#port-binding
+    port = int(os.getenv("PORT", "10000"))
+    logger.info("Starting health check server on port %s", port)
+    http_app.run(host="0.0.0.0", port=port)
 
 
 if __name__ == "__main__":
