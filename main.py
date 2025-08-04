@@ -338,9 +338,13 @@ async def main() -> None:
     # Handlers for the user questionnaire.
     application.add_handler(CommandHandler("start", start))
     # Text messages from normal chats go to handle_message.
+    # Handle text messages from users (not commands). Callback queries are handled separately by
+    # CallbackQueryHandler; they do not trigger message handlers in python‑telegram‑bot 22.x, so
+    # there is no need to explicitly filter them out. Using only TEXT and ~COMMAND filters
+    # prevents commands like /start from being treated as regular text.
     application.add_handler(
         MessageHandler(
-            filters.TEXT & (~filters.COMMAND) & (~filters.UpdateType.CALLBACK_QUERY),
+            filters.TEXT & (~filters.COMMAND),
             handle_message,
         )
     )
