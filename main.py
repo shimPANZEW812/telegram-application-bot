@@ -210,17 +210,15 @@ async def send_application_to_moderators(update: Update, context: ContextTypes.D
 
     # Send the application to the moderator chat.
     try:
-        sent_message = await context.bot.send_message(
+        await context.bot.send_message(
             chat_id=int(chat_id),
             text=answers,
             reply_markup=reply_markup,
             parse_mode=ParseMode.HTML,
         )
         logger.info("Sent application from user %s to moderator chat", user.id)
-        # Optionally notify user that their application has been submitted.
-        await update.message.reply_text(
-            "Спасибо! Ваша заявка отправлена на рассмотрение. Ожидайте ответа."
-        )
+        # Do not send a submission confirmation here. Subsequent messages from the
+        # applicant will trigger a reminder via application_submitted flag in handle_message().
     except Exception as e:
         logger.exception("Failed to send application to moderator chat: %s", e)
         await update.message.reply_text(
