@@ -55,9 +55,13 @@ logger = logging.getLogger(__name__)
 
 
 # Conversation state keys for storing user answers in context.user_data.
+# Each key corresponds to a questionnaire question. The questionnaire now
+# consists of four questions: age, prior experience, willingness to invest
+# in supplies, and source of information about the team.
 AGE_KEY = "age"
 EXPERIENCE_KEY = "experience"
 FINANCE_KEY = "finance"
+SOURCE_KEY = "source"
 
 # State to indicate that the moderator awaits a reason for rejection.
 PENDING_REASON_KEY = "pending_reason"
@@ -68,13 +72,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     # Reset user data for a fresh application.
     context.user_data.clear()
+    # Send a welcome message introducing the project and describing
+    # the benefits of joining. This message is separate from the first
+    # questionnaire question so that it appears clearly before the user
+    # begins answering.
     await update.message.reply_text(
-        "Здравствуйте! Давайте начнём небольшую анкету.\n"
-        "Пожалуйста, отвечайте на каждый вопрос одним сообщением.\n\n"
+        "Приветствуем тебя! С тобой бот Keepers Team.\n\n"
+        "Мы открыли набор в нашу команду, работающую в сфере NFT‑подарков через Telegram.\n"
+        "Уже сейчас ты можешь начать зарабатывать на одном из самых перспективных направлений\n\n"
+        "🔺 Мы предлагаем одни из лучших условий на рынке:\n\n"
+        "— 60% от оценки скупа — твоя чистая прибыль.\n"
+        "Для ТОП‑воркеров предусмотрен индивидуальный процент и бонусные условия.\n\n"
+        "— Пошаговые мануалы, основанные на реальном опыте.\n"
+        "Также доступны обучающие методички\n\n"
+        "— Постоянная поддержка от ТОПОВ\n\n"
+        "📈 Благодаря нашей системе распределения процентов ты сможешь выстроить пассивный доход без ограничений — всё зависит только от твоего желания и активности.\n\n"
+        "👥 Уже создавал или планируешь собрать собственную команду?\n"
+        "Для филиалов и опытных воркеров — особые условия сотрудничества и поддержка на старте."
+    )
+    # Prompt the first question in a separate message.
+    await update.message.reply_text(
         "Сколько вам лет?"
     )
-    # Record that we're waiting for the age answer next.
+    # Reset user questionnaire state. Use next_question to track the current question
+    # and application_submitted flag to detect when the user has already submitted.
+    context.user_data.clear()
     context.user_data["next_question"] = 1
+    context.user_data["application_submitted"] = False
     logger.info("Started questionnaire for user %s (%s)", user.id, user.full_name)
 
 
@@ -88,6 +112,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not message:
         return
 
+    # If the user has already submitted their application, politely remind them
+    # that their application is under review and ignore further input. This
+    # prevents them from accidentally restarting the questionnaire while they
+    # await a decision.
+    if context.user_data.get("application_submitted"):
+        await message.reply_text(
+            "Ваша заявка отправлена на рассмотрение. Ментор ответит вам, как только примет решение."
+        )
+        logger.info("User %s sent message after submission; reminder sent.", user.id)
+        return
+
     # Determine which question we expect next. Default to 1 if not set.
     question_number = context.user_data.get("next_question", 1)
 
@@ -97,31 +132,48 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data[AGE_KEY] = message.text.strip()
         context.user_data["next_question"] = 2
         await message.reply_text(
-            "Есть ли у вас опыт работы? Какой у вас стартовый капитал?"
+            "Уже работал в этой сфере?  Если да — где и с каким капиталом?\n"
+            "Если нет — расскажи, в каких сферах у тебя был опыт\n"
+            "(Одним сообщением)"
         )
         logger.info("Recorded age for user %s: %s", user.id, context.user_data[AGE_KEY])
     elif question_number == 2:
-        # Second question: Work experience and starting capital
+        # Second question: Prior experience and capital
         context.user_data[EXPERIENCE_KEY] = message.text.strip()
         context.user_data["next_question"] = 3
         await message.reply_text(
-            "Есть ли у вас финансовая возможность покрыть расходы на расходники?"
+            "Готовы ли вы вложить 10–35 $ на оплату расходников?"
         )
         logger.info(
             "Recorded experience for user %s: %s", user.id, context.user_data[EXPERIENCE_KEY]
         )
     elif question_number == 3:
-        # Third question: Financial means to cover supplies
+        # Third question: Willingness to invest in supplies
         context.user_data[FINANCE_KEY] = message.text.strip()
-        # Questionnaire finished; send application to moderator chat.
-        await send_application_to_moderators(update, context)
-        # Clear the questionnaire state.
-        context.user_data["next_question"] = None
+        context.user_data["next_question"] = 4
+        await message.reply_text(
+            "Ссылка на форум или источник, откуда вы о нас узнали\n"
+            "(Одним сообщением)"
+        )
         logger.info(
-            "Recorded finance for user %s: %s", user.id, context.user_data[FINANCE_KEY]
+            "Recorded finance willingness for user %s: %s", user.id, context.user_data[FINANCE_KEY]
+        )
+    elif question_number == 4:
+        # Fourth question: Source link or information
+        context.user_data[SOURCE_KEY] = message.text.strip()
+        # Questionnaire finished; send application to moderator chat and mark submitted.
+        await send_application_to_moderators(update, context)
+        context.user_data["next_question"] = None
+        context.user_data["application_submitted"] = True
+        logger.info(
+            "Recorded source for user %s: %s", user.id, context.user_data[SOURCE_KEY]
+        )
+        # Let the user know their application is being reviewed.
+        await message.reply_text(
+            "Спасибо! Ваша заявка отправлена на рассмотрение. Ментор ответит вам, как только примет решение."
         )
     else:
-        # The user wrote something unexpected; instruct them to restart.
+        # Unexpected input when not expecting any question; instruct to restart.
         await message.reply_text(
             "Неожиданный ввод. Пожалуйста, удалите переписку с ботом и начните заново командой /start."
         )
@@ -143,8 +195,10 @@ async def send_application_to_moderators(update: Update, context: ContextTypes.D
         f"<b>Новая заявка от пользователя:</b> @{user.username or user.id}\n"
         f"<b>ID:</b> {user.id}\n\n"
         f"<b>Сколько вам лет?</b> {context.user_data.get(AGE_KEY, '—')}\n"
-        f"<b>Есть ли у вас опыт работы? Какой у вас стартовый капитал?</b> {context.user_data.get(EXPERIENCE_KEY, '—')}\n"
-        f"<b>Есть ли у вас финансовая возможность покрыть расходы на расходники?</b> {context.user_data.get(FINANCE_KEY, '—')}"
+        f"<b>Уже работал в этой сфере? Если да — где и с каким капиталом?\nЕсли нет — расскажи, в каких сферах у тебя был опыт</b>"
+        f" {context.user_data.get(EXPERIENCE_KEY, '—')}\n"
+        f"<b>Готовы ли вы вложить 10–35 $ на оплату расходников?</b> {context.user_data.get(FINANCE_KEY, '—')}\n"
+        f"<b>Ссылка на форум или источник, откуда вы о нас узнали</b> {context.user_data.get(SOURCE_KEY, '—')}"
     )
 
     # Inline keyboard for moderator actions: accept or reject.
@@ -338,22 +392,24 @@ def _create_application(token: str) -> Application:
     application = Application.builder().token(token).build()
 
     # Attach command handlers and message handlers for the questionnaire.
+    # Register handlers. Restrict the main questionnaire handler to private chats
+    # to ensure moderator messages are not inadvertently processed.
     application.add_handler(CommandHandler("start", start))
     application.add_handler(
         MessageHandler(
-            filters.TEXT & (~filters.COMMAND),
+            filters.ChatType.PRIVATE & filters.TEXT & (~filters.COMMAND),
             handle_message,
         )
     )
     # Handle callback queries from the moderator inline buttons.
     application.add_handler(CallbackQueryHandler(handle_moderator_callback))
     # Handle moderator replies containing rejection reasons. Scope the handler to the
-    # moderator chat by ID. Note: using `filters.Chat` with int(...) ensures the
-    # handler triggers only in the specified chat.
+    # moderator chat by ID so it only triggers in that chat. Note: using
+    # `filters.Chat` with int(...) ensures the handler triggers only for the specified chat.
     mod_chat_id = int(os.getenv("MOD_CHAT_ID", "0"))
     if mod_chat_id != 0:
         application.add_handler(
-            MessageHandler(filters.ALL & filters.Chat(mod_chat_id), handle_moderator_message),
+            MessageHandler(filters.Chat(mod_chat_id) & filters.TEXT, handle_moderator_message),
         )
     return application
 
