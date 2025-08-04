@@ -410,54 +410,15 @@ def _create_application(token: str) -> Application:
     return application
 
 
-def _run_bot(token: str) -> None:
+def _start_health_server() -> None:
+    """Runs a simple Flask-based health check server.
+
+    Render's free tier expects services to bind to an HTTP port. Starting a
+    lightweight web server keeps the service alive and provides an endpoint
+    that external uptime services can ping to prevent sleeping. This server
+    runs in its own thread so that the Telegram bot can execute in the main
+    thread without interference.
     """
-    Entry point to run the Telegram bot. This function is intended to run in a
-    separate thread. To ensure that the python-telegram-bot internals have
-    access to an event loop in this thread, we create and set a fresh asyncio
-    event loop explicitly. Without this, `Application.run_polling()` will
-    attempt to fetch the current loop and raise a RuntimeError because none
-    exists. See https://docs.python.org/3/library/asyncio-eventloop.html#asyncio.new_event_loop
-    for details.
-
-    Any uncaught exceptions are logged.
-    """
-    try:
-        # Ensure this thread has its own event loop; otherwise PTB cannot operate.
-        import asyncio as _asyncio
-
-        loop = _asyncio.new_event_loop()
-        _asyncio.set_event_loop(loop)
-
-        application = _create_application(token)
-        logger.info("Bot starting...")
-        # run_polling() is blocking; it starts and runs the PTB application until
-        # a stop signal is received. When running inside a thread, we must
-        # disable signal handling by passing stop_signals=None; otherwise PTB
-        # attempts to register signal handlers and Python raises a ValueError.
-        application.run_polling(stop_signals=None)
-    except Exception:
-        logger.exception("Unexpected error in bot thread")
-
-
-def main() -> None:
-    """Starts the Telegram bot and a simple health‑check web server on Render."""
-    token = os.getenv("BOT_TOKEN")
-    if not token:
-        raise RuntimeError("BOT_TOKEN environment variable must be set.")
-
-    # Start the bot in a separate daemon thread. Running the bot in another thread
-    # allows the main thread to host a tiny HTTP server to satisfy Render's port
-    # scanning requirements. Without an open port, Render will terminate the
-    # service on free plans. See: https://render.com/docs/web-services#port-binding
-    import threading
-
-    bot_thread = threading.Thread(target=_run_bot, args=(token,), daemon=True)
-    bot_thread.start()
-
-    # Set up a minimal Flask app to keep the service's port open. The application
-    # exposes a single route '/' that returns a simple message. This endpoint can
-    # be pinged (e.g. by an uptime service) to keep the instance awake.
     from flask import Flask
 
     http_app = Flask(__name__)
@@ -472,6 +433,47 @@ def main() -> None:
     port = int(os.getenv("PORT", "10000"))
     logger.info("Starting health check server on port %s", port)
     http_app.run(host="0.0.0.0", port=port)
+
+
+def main() -> None:
+    """
+    Entry point for the application.
+
+    This function starts two components:
+
+    1. A background HTTP server used solely for health checks and keeping the
+       Render service alive. It runs in a daemon thread so that it does not
+       block the main execution flow. This server listens on the port defined
+       by the PORT environment variable (or 10000 locally) and responds with
+       "OK" on the root path.
+
+    2. The Telegram bot itself, which runs in the main thread. Running the bot
+       in the main thread avoids complications around event loop management in
+       secondary threads and ensures proper signal handling. Because the Flask
+       server runs in a separate thread, the bot can block on polling without
+       preventing the HTTP server from handling requests.
+    """
+    token = os.getenv("BOT_TOKEN")
+    if not token:
+        raise RuntimeError("BOT_TOKEN environment variable must be set.")
+
+    import threading
+
+    # Launch the health check server in a daemon thread. If this thread exits,
+    # it will not prevent the application from shutting down. The server
+    # continues to run while the bot polls for updates.
+    http_thread = threading.Thread(target=_start_health_server, daemon=True)
+    http_thread.start()
+
+    # Build and configure the Telegram application in the main thread.
+    application = _create_application(token)
+    logger.info("Bot starting...")
+    # Start polling for updates. Without specifying stop_signals, python-telegram-bot
+    # installs handlers for SIGINT/SIGTERM in the main thread which is safe.
+    # When running in the main thread on Render, these signals allow graceful
+    # shutdowns if the platform terminates the process. If necessary, we could
+    # pass stop_signals=None to disable signal handlers.
+    application.run_polling()
 
 
 if __name__ == "__main__":
