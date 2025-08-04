@@ -327,7 +327,7 @@ async def handle_moderator_message(update: Update, context: ContextTypes.DEFAULT
     context.bot_data[PENDING_REASON_KEY].pop(moderator_id, None)
 
 
-async def main() -> None:
+def main() -> None:
     """Starts the bot using polling."""
     token = os.getenv("BOT_TOKEN")
     if not token:
@@ -358,11 +358,13 @@ async def main() -> None:
 
     # Start the bot.
     logger.info("Bot starting...")
-    await application.run_polling()
+    # run_polling is a blocking call that internally runs the event loop and handles graceful shutdown.
+    application.run_polling()
 
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        # Call main() directly without asyncio.run to avoid issues with closing the event loop.
+        main()
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped by user")
