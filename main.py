@@ -360,16 +360,28 @@ def _create_application(token: str) -> Application:
 
 def _run_bot(token: str) -> None:
     """
-    Entry point to run the Telegram bot. This function is designed to be executed
-    in its own thread so that the main thread can run a simple web server for
-    Render's port binding requirements. It builds the application and starts
-    polling. Any uncaught exceptions will be logged.
+    Entry point to run the Telegram bot. This function is intended to run in a
+    separate thread. To ensure that the python-telegram-bot internals have
+    access to an event loop in this thread, we create and set a fresh asyncio
+    event loop explicitly. Without this, `Application.run_polling()` will
+    attempt to fetch the current loop and raise a RuntimeError because none
+    exists. See https://docs.python.org/3/library/asyncio-eventloop.html#asyncio.new_event_loop
+    for details.
+
+    Any uncaught exceptions are logged.
     """
     try:
+        # Ensure this thread has its own event loop; otherwise PTB cannot operate.
+        import asyncio as _asyncio
+
+        loop = _asyncio.new_event_loop()
+        _asyncio.set_event_loop(loop)
+
         application = _create_application(token)
         logger.info("Bot starting...")
-        # run_polling() is blocking; it starts the event loop internally and
-        # handles graceful shutdown signals.
+        # run_polling() is blocking; it starts and runs the PTB application until
+        # a stop signal is received. We do not pass stop_signals to avoid PTB
+        # registering signal handlers in this non-main thread.
         application.run_polling()
     except Exception:
         logger.exception("Unexpected error in bot thread")
