@@ -380,9 +380,10 @@ def _run_bot(token: str) -> None:
         application = _create_application(token)
         logger.info("Bot starting...")
         # run_polling() is blocking; it starts and runs the PTB application until
-        # a stop signal is received. We do not pass stop_signals to avoid PTB
-        # registering signal handlers in this non-main thread.
-        application.run_polling()
+        # a stop signal is received. When running inside a thread, we must
+        # disable signal handling by passing stop_signals=None; otherwise PTB
+        # attempts to register signal handlers and Python raises a ValueError.
+        application.run_polling(stop_signals=None)
     except Exception:
         logger.exception("Unexpected error in bot thread")
 
