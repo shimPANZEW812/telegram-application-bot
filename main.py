@@ -168,10 +168,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.info(
             "Recorded source for user %s: %s", user.id, context.user_data[SOURCE_KEY]
         )
-        # Let the user know their application is being reviewed.
-        await message.reply_text(
-            "Спасибо! Ваша заявка отправлена на рассмотрение. Ментор ответит вам, как только примет решение."
-        )
+        # Do not send a follow‑up message here. Any subsequent user messages
+        # will trigger a reminder via the application_submitted flag.
     else:
         # Unexpected input when not expecting any question; instruct to restart.
         await message.reply_text(
